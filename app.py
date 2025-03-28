@@ -211,6 +211,6 @@ def download_tours(n_clicks, input_email, input_password, tour_data, input_forma
     return download
 
 if __name__ == '__main__':
-    app.run_server(debug=False)
+    app.run(debug=False)
     
 # Add some guarantee that passwords and emails are not removed after clicking "view" before clicking "download"
