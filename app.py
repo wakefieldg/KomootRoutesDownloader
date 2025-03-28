@@ -21,10 +21,8 @@ def sanitize(m, replacement=" "):
 
     return sanitized
 
-# write basic dash app with layout
-server = Flask(__name__)
-
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
+server = app.server
 
 # Requires Dash 2.17.0 or later
 app.layout = [
