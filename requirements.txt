@@ -36,7 +36,7 @@ itsdangerous==2.2.0
 Jinja2==3.1.6
 jiter==0.8.0
 komootgpx==1.3.2
-Mako==1.3.9.dev0
+Mako==1.3.9
 Markdown==3.5.2
 MarkupSafe==3.0.2
 meson==1.5.2
