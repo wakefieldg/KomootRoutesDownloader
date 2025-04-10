@@ -8,6 +8,12 @@ from flask import Flask
 from dash import Dash, html, dcc, callback, Output, Input, State, dash_table
 import dash_bootstrap_components as dbc
 import re
+import io
+import zipfile
+from azure.storage.blob import BlobServiceClient, generate_container_sas, ContainerSasPermissions
+
+# from dotenv import load_dotenv
+# load_dotenv()
 
 def sanitize(m, replacement=" "):
     # Define invalid characters for file names (Windows, Linux, Mac)
@@ -20,6 +26,16 @@ def sanitize(m, replacement=" "):
     sanitized = sanitized.strip() or "default_filename"
 
     return sanitized
+
+account_name = "https://asa4krd.blob.core.windows.net/"
+storage_client = BlobServiceClient(
+    account_url=account_name,
+    credential=os.getenv("AZURE_STORAGE_KEY"),
+)
+
+list = storage_client.list_containers()
+for container in list:
+    print(container.name)
 
 app = Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 server = app.server
@@ -76,7 +92,7 @@ app.layout = [
         ], className="col-5"),
     ], className="row"),
     html.Hr(),
-    html.Br(),
+    html.Div(id="number_of_tours"),
     html.Div("The tours that match your criteria are displayed in the table below:"),
     dash_table.DataTable(id="route_list", columns=[{"name": i, "id": i} for i in ["type", "sport", "date", "name", "distance", "elevation_up"]]),
     html.Br(),
@@ -89,7 +105,7 @@ app.layout = [
                      multi=True),
         html.Div(id="format_example")]),
     html.Br(),
-    html.Button("Download Tours", id="btn_download_button"),
+    html.Button("Generate download link", id="btn_download_button"),
     dcc.Download(id="download_button"),
 ]
 
@@ -112,7 +128,8 @@ def display_format(input):
 
 @callback(
     [Output("route_list", "data"),
-    Output("login_status", "children")],
+    Output("login_status", "children"),
+    Output("number_of_tours", "children")],
     Input("btn_view_button", "n_clicks"),
     State("input_email", "value"),
     State("input_password", "value"),
@@ -149,7 +166,11 @@ def func(n_clicks, input_email, input_password, input_type, input_distance):
     filtered_tours["distance"] = (filtered_tours["distance"] / 1000).apply(lambda x: f"{x:,.0f}km")
     filtered_tours["elevation_up"] = filtered_tours["elevation_up"].apply(lambda x: f"{x:,.0f}m")
     
-    return [filtered_tours.to_dict('records'), "Login successful - do not change these fields before pressing Download Tours"]
+    return [
+        filtered_tours.to_dict('records'), 
+        "Login successful - do not change these fields before pressing Download Tours",
+        f"There are {len(filtered_tours)} tours that match your criteria."
+    ]
 
 @callback(Output("download_button", "data"),
               Input("btn_download_button", "n_clicks"),
@@ -162,6 +183,21 @@ def download_tours(n_clicks, input_email, input_password, tour_data, input_forma
     # Connect to the Komoot API using the login details
     api = komootgpx.KomootApi()
     api.login(input_email, input_password)
+    # Create a username from the email address that can be used as a container name
+    username = input_email.split("@")[0]
+    username = re.sub(r"[^a-zA-Z0-9]", "", username)
+    
+    # Remove old blobs if user already exists, otherwise create a new container
+    container_list = storage_client.list_containers()
+    container_names = [container.name for container in container_list]
+    if username in container_names:
+        container_client = storage_client.get_container_client(username)
+        # remove all blobs in the container
+        blobs = container_client.list_blobs()
+        for blob in blobs:
+            container_client.delete_blob(blob.name)
+    else:
+        container_client = storage_client.create_container(username)
     
     # Create a temporary folder to store the GPX files
     if os.path.exists("TempFolder"):
@@ -186,27 +222,44 @@ def download_tours(n_clicks, input_email, input_password, tour_data, input_forma
     # Loop over tours in the table
     for tour in tour_data:
         os.makedirs(os.path.join("TempFolder", tour["tour_info_string"]))
-        komootgpx.make_gpx(tour["id"], api,
-                           os.path.join("TempFolder", tour["tour_info_string"]),
-                           no_poi=False, skip_existing=False, tour_base=None, add_date=True, max_desc_length=-1)
-    
-        # Take the downloaded GPX file and move it to the TempFolder, removing the subfolder
+        komootgpx.make_gpx(
+            tour["id"], 
+            api,
+            os.path.join("TempFolder", tour["tour_info_string"]),
+            no_poi=False, skip_existing=False, tour_base=None, add_date=True, max_desc_length=-1
+        )
+        # Because we cannot control the GPX file name in download, we download to a folder with the name we want
+        # Then we rename the GPX file to the name of the folder and delete the folder
         for file in os.listdir(os.path.join("TempFolder", tour["tour_info_string"])):
             shutil.move(os.path.join("TempFolder", tour["tour_info_string"], file), os.path.join("TempFolder", tour["tour_info_string"] + ".gpx"))
         os.rmdir(os.path.join("TempFolder", tour["tour_info_string"]))
+        
+        # Upload the GPX file to the Azure Blob Storage
+        with open(os.path.join("TempFolder", tour["tour_info_string"] + ".gpx"), "rb") as data:
+            container_client.upload_blob(name=tour["tour_info_string"] + ".gpx", data=data)
+        
+        # Remove the GPX file from the local storage
+        os.remove(os.path.join("TempFolder", tour["tour_info_string"] + ".gpx"))
     
     del api
     
-    # Take all files in the TempFolder and zip them, then clean up the folders
-    if os.path.exists("Tours.zip"):
-        os.remove("Tours.zip")
-    shutil.make_archive("Tours", 'zip', "TempFolder")
-    download = dcc.send_file("Tours.zip")
     
-    shutil.rmtree("TempFolder")
-    os.remove("Tours.zip")
-    
-    return download
+    # In-memory buffer to write zip content
+    buffer = io.BytesIO()
+
+    # Create a zip file in memory (write mode)
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zip_file:
+        # Loop through all blobs in the container
+        for blob in container_client.list_blobs():
+            blob_client = container_client.get_blob_client(blob)
+            # Download the .gpx file into memory and add it to the ZIP
+            zip_file.writestr(blob.name, blob_client.download_blob().readall())
+
+    # Make sure to seek to the beginning of the buffer before reading
+    buffer.seek(0)
+
+    # Send the zip file as a download to the user
+    return dcc.send_bytes(buffer.read(), filename=username + "_KomootFiles.zip")
 
 if __name__ == '__main__':
     app.run(debug=False)

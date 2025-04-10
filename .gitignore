@@ -1,2 +1,4 @@
 /.venv
 /TempFolder
+.env
+/__pycache__/
