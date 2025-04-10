@@ -143,7 +143,7 @@ def func(n_clicks, input_email, input_password, input_type, input_distance):
         api.login(input_email, input_password)
     except:
         if api.user_id == "":
-            return [[], "Login failed. Please check your email and password."]
+            return [[], "Login failed. Please check your email and password.", ""]
     
     if len(input_type) == 1:
         api_input_type = input_type[0]
