@@ -262,6 +262,6 @@ def download_tours(n_clicks, input_email, input_password, tour_data, input_forma
     return dcc.send_bytes(buffer.read(), filename=username + "_KomootFiles.zip")
 
 if __name__ == '__main__':
-    app.run(debug=False)
+    app.run(debug=True)
     
 # Add some guarantee that passwords and emails are not removed after clicking "view" before clicking "download"
